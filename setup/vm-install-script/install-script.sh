@@ -1,84 +1,94 @@
 #!/bin/bash
 
-echo ".........----------------#################._.-.-INSTALL-.-._.#################----------------........."
+set -e
+
+echo "🔧 Starting DevOps setup on Azure VM (Ubuntu 18.04)..."
+
+#######################################
+# 1. Customize the terminal prompt
+#######################################
+echo "🎨 Customizing terminal prompt..."
+cat <<'EOPROMPT' >> ~/.bashrc
+
+# Custom colorful prompt
+force_color_prompt=yes
 PS1='\[\e[01;36m\]\u\[\e[01;37m\]@\[\e[01;33m\]\H\[\e[01;37m\]:\[\e[01;32m\]\w\[\e[01;37m\]\$\[\033[0;37m\] '
-echo "PS1='\[\e[01;36m\]\u\[\e[01;37m\]@\[\e[01;33m\]\H\[\e[01;37m\]:\[\e[01;32m\]\w\[\e[01;37m\]\$\[\033[0;37m\] '" >> ~/.bashrc
-sed -i '1s/^/force_color_prompt=yes\n/' ~/.bashrc
+EOPROMPT
 source ~/.bashrc
 
-apt-get autoremove -y  #removes the packages that are no longer needed
-apt-get update
-systemctl daemon-reload
+#######################################
+# 2. System cleanup and update
+#######################################
+echo "🧹 Cleaning up and updating system..."
+sudo apt-get update -y
+sudo apt-get upgrade -y
+sudo apt-get autoremove -y
+sudo systemctl daemon-reexec
 
-curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | apt-key add -
-cat <<EOF > /etc/apt/sources.list.d/kubernetes.list
-deb http://apt.kubernetes.io/ kubernetes-xenial main
+#######################################
+# 3. Install Docker
+#######################################
+echo "🐳 Installing Docker..."
+sudo apt-get install -y \
+    apt-transport-https \
+    ca-certificates \
+    curl \
+    gnupg \
+    software-properties-common
+
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo apt-key add -
+
+sudo add-apt-repository \
+   "deb [arch=amd64] https://download.docker.com/linux/ubuntu \
+   $(lsb_release -cs) stable"
+
+sudo apt-get update
+sudo apt-get install -y docker-ce docker-ce-cli containerd.io
+sudo usermod -aG docker $USER
+
+#######################################
+# 4. Install Maven
+#######################################
+echo "📦 Installing Maven..."
+sudo apt-get install -y maven
+
+#######################################
+# 5. Install Kubernetes tools
+#######################################
+echo "☸️ Setting up Kubernetes repository..."
+curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key add -
+
+cat <<EOF | sudo tee /etc/apt/sources.list.d/kubernetes.list
+deb https://apt.kubernetes.io/ kubernetes-xenial main
 EOF
 
-KUBE_VERSION=1.20.0
-apt-get update
-apt-get install -y docker.io vim build-essential jq python3-pip kubelet=${KUBE_VERSION}-00 kubectl=${KUBE_VERSION}-00 kubernetes-cni=0.8.7-00 kubeadm=${KUBE_VERSION}-00
-pip3 install jc
+sudo apt-get update
+sudo apt-get install -y kubelet kubeadm kubectl
+sudo apt-mark hold kubelet kubeadm kubectl
 
-### UUID of VM 
-### comment below line if this Script is not executed on Cloud based VMs
-jc dmidecode | jq .[1].values.uuid -r
+echo "🚫 Disabling swap (required for Kubernetes)..."
+sudo swapoff -a
+sudo sed -i '/ swap / s/^/#/' /etc/fstab
 
-cat > /etc/docker/daemon.json <<EOF
-{
-  "exec-opts": ["native.cgroupdriver=systemd"],
-  "log-driver": "json-file",
-  "storage-driver": "overlay2"
-}
-EOF
-mkdir -p /etc/systemd/system/docker.service.d
+#######################################
+# 6. Install Jenkins
+#######################################
+echo "🧰 Installing Jenkins..."
+curl -fsSL https://pkg.jenkins.io/debian-stable/jenkins.io.key | sudo apt-key add -
+sudo sh -c 'echo deb https://pkg.jenkins.io/debian-stable binary/ > \
+    /etc/apt/sources.list.d/jenkins.list'
 
-systemctl daemon-reload
-systemctl restart docker
-systemctl enable docker
-systemctl enable kubelet
-systemctl start kubelet
+sudo apt-get update
+sudo apt-get install -y openjdk-11-jdk jenkins
 
-echo ".........----------------#################._.-.-KUBERNETES-.-._.#################----------------........."
-rm /root/.kube/config
-kubeadm reset -f
-
-# uncomment below line if your host doesnt have minimum requirement of 2 CPU
-# kubeadm init --kubernetes-version=${KUBE_VERSION} --ignore-preflight-errors=NumCPU --skip-token-print
-kubeadm init --kubernetes-version=${KUBE_VERSION} --skip-token-print
-
-mkdir -p ~/.kube
-sudo cp -i /etc/kubernetes/admin.conf ~/.kube/config
-
-kubectl apply -f https://github.com/weaveworks/weave/releases/download/v2.8.1/weave-daemonset-k8s.yaml
-
-sleep 60
-
-echo "untaint controlplane node"
-kubectl taint node $(kubectl get nodes -o=jsonpath='{.items[].metadata.name}') node.kubernetes.io/not-ready:NoSchedule-
-kubectl taint node $(kubectl get nodes -o=jsonpath='{.items[].metadata.name}') node-role.kubernetes.io/master:NoSchedule-
-kubectl get node -o wide
-
-
-
-echo ".........----------------#################._.-.-Java and MAVEN-.-._.#################----------------........."
-sudo apt install openjdk-11-jdk -y
-java -version
-sudo apt install -y maven
-mvn -v
-
-
-
-echo ".........----------------#################._.-.-JENKINS-.-._.#################----------------........."
-wget -q -O - https://pkg.jenkins.io/debian-stable/jenkins.io.key | sudo apt-key add -
-sudo sh -c 'echo deb http://pkg.jenkins.io/debian-stable binary/ > /etc/apt/sources.list.d/jenkins.list'
-sudo apt update
-sudo apt install -y jenkins
-systemctl daemon-reload
-systemctl enable jenkins
+sudo systemctl enable jenkins
 sudo systemctl start jenkins
-#sudo systemctl status jenkins
-sudo usermod -a -G docker jenkins
-echo "jenkins ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
 
-echo ".........----------------#################._.-.-COMPLETED-.-._.#################----------------........."
+#######################################
+# Done!
+#######################################
+echo "✅ DevOps setup complete!"
+echo "🔐 Jenkins initial password:"
+sudo cat /var/lib/jenkins/secrets/initialAdminPassword
+echo
+echo "🌐 Access Jenkins at: http://<your-server-ip>:8080"
